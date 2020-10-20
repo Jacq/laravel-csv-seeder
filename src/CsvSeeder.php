@@ -3,6 +3,7 @@
 namespace Flynsarmy\CsvSeeder;
 
 use App;
+use Closure;
 use Log;
 use DB;
 use Carbon\Carbon;
@@ -89,6 +90,16 @@ class CsvSeeder extends Seeder
     public array $mapping = [];
 
 
+    public function pre_insert_callback($seedData, $data)
+    {
+        return $seedData;
+    }
+
+    public function post_insert_callback($seedData, $data)
+    {
+        return $seedData;
+    }
+
     /**
      * Run DB seed
      */
@@ -110,7 +121,7 @@ class CsvSeeder extends Seeder
     /**
      * Strip UTF-8 BOM characters from the start of a string
      *
-     * @param  string $text
+     * @param string $text
      * @return string       String with BOM stripped
      */
     public function stripUtf8Bom(string $text): string
@@ -164,8 +175,10 @@ class CsvSeeder extends Seeder
         $success = true;
         $row_count = 0;
         $data = [];
+        $dataRaw = [];
         $mapping = $this->mapping ?: [];
         $offset = $this->offset_rows;
+        $header = [];
 
         if ($mapping) {
             $this->hashable = $this->removeUnusedHashColumns($mapping);
@@ -181,11 +194,13 @@ class CsvSeeder extends Seeder
             // No mapping specified - the first row will be used as the mapping
             // ie it's a CSV title row. This row won't be inserted into the DB.
             if (!$mapping) {
+                $header = $row;
                 $mapping = $this->createMappingFromRow($row);
                 $this->hashable = $this->removeUnusedHashColumns($mapping);
                 continue;
             }
 
+            $rowRaw = $row;
             $row = $this->readRow($row, $mapping);
 
             // insert only non-empty rows from the csv file
@@ -194,22 +209,25 @@ class CsvSeeder extends Seeder
             }
 
             $data[$row_count] = $row;
+            $dataRaw[$row_count] = $rowRaw;
 
             // Chunk size reached, insert
             if (++$row_count == $this->insert_chunk_size) {
-                $success = $success && $this->insert($data);
+
+                $success = $success && $this->insert($data, ['header' => $header, 'rows' => $dataRaw]);
                 $row_count = 0;
                 // clear the data array explicitly when it was inserted so
                 // that nothing is left, otherwise a leftover scenario can
                 // cause duplicate inserts
                 $data = [];
+                $dataRaw = [];
             }
         }
 
         // Insert any leftover rows
         //check if the data array explicitly if there are any values left to be inserted, if insert them
         if (count($data)) {
-            $success = $success && $this->insert($data);
+            $success = $success && $this->insert($data, ['header' => $header, 'rows' => $dataRaw]);
         }
 
         fclose($handle);
@@ -266,8 +284,8 @@ class CsvSeeder extends Seeder
     /**
      * Read a CSV row into a DB insertable array
      *
-     * @param array $row        A row of data to read
-     * @param array $mapping    Array of csvCol => dbCol
+     * @param array $row A row of data to read
+     * @param array $mapping Array of csvCol => dbCol
      * @return array
      */
     public function readRow(array $row, array $mapping): array
@@ -302,12 +320,15 @@ class CsvSeeder extends Seeder
      * Seed a given set of data to the DB
      *
      * @param array $seedData
+     * @param array $rowData
      * @return bool   TRUE on success else FALSE
      */
-    public function insert(array $seedData): bool
+    public function insert(array $seedData, array $rowData): bool
     {
         try {
+            $seedData = $this->pre_insert_callback($seedData, $rowData);
             DB::connection($this->connection)->table($this->table)->insert($seedData);
+            $this->post_insert_callback($seedData, $rowData);
         } catch (\Exception $e) {
             Log::error("CSV insert failed: " . $e->getMessage() . " - CSV " . $this->filename);
             return false;
